@@ -41,9 +41,7 @@ pub struct ChatBehaviour {
     pub ping: Ping,
     pub rendezvous: Rendezvous,
     pub gossipsub: GossipsubStream,
-    pub mdns: Mdns,
-    #[behaviour(ignore)]
-    pub peer_connected: Arc<AtomicBool>,
+    pub mdns: Toggle<Mdns>,
 }
 
 pub enum ChatBehaviourEvent {
@@ -124,7 +122,7 @@ impl ChatBehaviour {
         let keypair = keypair_from_privkey(private_key)?;
         let peer_id = keypair.public().to_peer_id();
 
-        let mdns = Mdns::new(MdnsConfig::default()).await?;
+        let mdns = None.into();//Some(Mdns::new(MdnsConfig::default()).await?).into();
         let autonat = Autonat::new(peer_id, Default::default());
         let ping = Ping::default();
         let identify = Identify::new(
@@ -148,7 +146,6 @@ impl ChatBehaviour {
             ping,
             gossipsub,
             rendezvous,
-            peer_connected: Arc::new(Default::default()),
         })
     }
 

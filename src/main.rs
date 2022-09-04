@@ -9,13 +9,15 @@ use libp2p::{
     core::PublicKey,
     identify::{IdentifyEvent, IdentifyInfo},
     identity::Keypair,
+    kad::{record::Key, GetProvidersOk, KademliaEvent, QueryResult},
     mdns::MdnsEvent,
     multiaddr::Protocol,
-    swarm::{SwarmEvent, AddressScore},
-    Multiaddr, PeerId, Swarm, kad::{QueryResult, KademliaEvent},
+    swarm::{AddressScore, SwarmEvent},
+    Multiaddr, PeerId, Swarm,
 };
 use rustyline_async::{Readline, ReadlineError, SharedWriter};
-use std::{io::Write, str::FromStr};
+use sha2::{Digest, Sha256};
+use std::{collections::HashSet, hash::Hash, io::Write, str::FromStr, time::Duration};
 
 const BOOTNODES: [&str; 4] = [
     "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -23,6 +25,13 @@ const BOOTNODES: [&str; 4] = [
     "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
     "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
 ];
+
+#[derive(Hash, PartialEq, Eq)]
+pub struct PeerInfo {
+    pub peer_id: PeerId,
+    pub address: Vec<Multiaddr>,
+    pub public_key: crypto_seal::key::PublicKey,
+}
 
 #[derive(Debug, Parser)]
 #[clap(name = "libp2p chat")]
@@ -77,22 +86,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (mut rl, mut stdout) = Readline::new(format!("{}  :> ", peer))?;
-    
+
     let mut delay = futures_timer::Delay::new(std::time::Duration::from_secs(2)).fuse();
     // Used to begin listening on addresses
     loop {
-            futures::select! {
-                event = swarm.next() => {
-                    if let SwarmEvent::NewListenAddr { address, .. } = event.unwrap() {
-                        writeln!(stdout, "> Listening on {}", address)?;
-                    }
-                }
-                _ = delay => {
-                    break;
+        futures::select! {
+            event = swarm.next() => {
+                if let SwarmEvent::NewListenAddr { address, .. } = event.unwrap() {
+                    writeln!(stdout, "> Listening on {}", address)?;
                 }
             }
+            _ = delay => {
+                break;
+            }
+        }
     }
-    
 
     let bootaddr = Multiaddr::from_str("/dnsaddr/bootstrap.libp2p.io")?;
     if let Some(true) = opt.use_relay {
@@ -125,10 +133,26 @@ async fn main() -> anyhow::Result<()> {
 
     let stream = swarm.behaviour_mut().gossipsub.subscribe(topic.clone())?;
 
+    let topic_key = Key::from(topic_hash(topic.as_bytes()));
+
+    let mut query_registry = HashSet::new();
+
+    query_registry.insert(
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .start_providing(topic_key.clone())?,
+    );
+
     futures::pin_mut!(stream);
 
-    let mut recipients: Vec<crypto_seal::key::PublicKey> = vec![];
+    let mut peer_book: HashSet<PeerInfo> = HashSet::new();
     let mut find_peer = PeerId::random();
+    let mut list_interval = tokio::time::interval(Duration::from_secs(120));
+    let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(120));
+    let mut get_provider_interval = tokio::time::interval(Duration::from_millis(500));
+    let mut peer_list = HashSet::new();
+
     loop {
         tokio::select! {
             message = stream.next() => {
@@ -145,8 +169,8 @@ async fn main() -> anyhow::Result<()> {
                     let mut command = line.trim().split(' ');
                     match command.next() {
                         Some("!list") => {
-                            for recipient in recipients.iter() {
-                                writeln!(stdout, "Public Key: {}", bs58::encode(recipient.encode()).into_string())?;
+                            for recipient in peer_book.iter() {
+                                writeln!(stdout, "Public Key: {}", recipient.public_key)?;
                             }
                         },
                         Some("!dial-addr") => {
@@ -206,12 +230,12 @@ async fn main() -> anyhow::Result<()> {
                             swarm.behaviour_mut().kademlia.get_closest_peers(peer);
                         }
                         Some("!id") => {
-                            writeln!(stdout, "Public Key: {}", bs58::encode(private.public_key()?.encode()).into_string())?;
+                            writeln!(stdout, "Public Key: {}", private.public_key()?)?;
                         }
                         _ => {
                             if !line.is_empty() {
                                 let line = line.to_string();
-                                let message = line.clone().seal(&private, recipients.clone())?;
+                                let message = line.clone().seal(&private, peer_book.iter().map(|info| info.public_key.clone()).collect::<Vec<_>>())?;
 
                                 if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), message.to_vec()?) {
                                     writeln!(stdout, "Error sending message: {}", e)?;
@@ -236,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
                     writeln!(stdout, "Error: {}", e)?;
                     continue
                 }
-            },// 
+            },//
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Rendezvous(_)) => {},
@@ -244,6 +268,14 @@ async fn main() -> anyhow::Result<()> {
                         // writeln!(stdout, "Relay Client Event: {:?}", event)?;
                     }
                     SwarmEvent::Behaviour(ChatBehaviourEvent::RelayServer(_event)) => { }
+                    SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(libp2p::gossipsub::GossipsubEvent::Unsubscribed { peer_id, .. })) => {
+                        for peer in peer_book.iter() {
+                            if peer.peer_id == peer_id {
+                                writeln!(stdout, "{} has left.", peer.public_key)?;
+                                break;
+                            }
+                        }
+                    },
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(_)) => {},
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Mdns(event)) => match event {
                         MdnsEvent::Discovered(list) => {
@@ -253,13 +285,17 @@ async fn main() -> anyhow::Result<()> {
                         }
                         MdnsEvent::Expired(list) => {
                             for (peer, _) in list {
-                                if !swarm.behaviour().mdns.has_node(&peer) {
-                                    swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
+                                if let Some(mdns) = swarm.behaviour().mdns.as_ref() {
+                                    if !mdns.has_node(&peer) {
+                                        swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
+                                    }
                                 }
                             }
                         }
                     },
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Ping(_)) => {}
+                    SwarmEvent::Behaviour(ChatBehaviourEvent::Ping(_event)) => {
+
+                    }
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(event)) => {
                         if let IdentifyEvent::Received {
                             peer_id,
@@ -273,11 +309,17 @@ async fn main() -> anyhow::Result<()> {
                                 },
                         } = event
                         {
-                            //TODO: Use Rendezvous for discovery of peers under the same namespace
                             if agent_version == "libp2p-chat" {
                                 if let PublicKey::Ed25519(pk) = public_key {
                                     match crypto_seal::key::PublicKey::from_ed25519_bytes(&pk.encode()) {
-                                        Ok(pk) if !recipients.contains(&pk) => recipients.push(pk),
+                                        Ok(pk) if !peer_book.iter().any(|peer| peer.public_key == pk) => {
+                                            writeln!(stdout, "> {} joined", pk)?;
+                                            peer_book.insert(PeerInfo {
+                                                peer_id,
+                                                public_key: pk,
+                                                address: listen_addrs.clone()
+                                            });
+                                        },
                                         _ => continue
                                     }
                                 }
@@ -292,9 +334,8 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(event)) => {
-                        match event {
-                            KademliaEvent::OutboundQueryCompleted { result, .. } => match result {
+                    SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(KademliaEvent::OutboundQueryCompleted { id, result, .. })) => {
+                        match result {
                                 QueryResult::GetClosestPeers(Ok(ok)) => {
                                     let mut found = false;
                                     for peer in ok.peers {
@@ -308,11 +349,24 @@ async fn main() -> anyhow::Result<()> {
                                         writeln!(stdout, "> {find_peer} cannot be found")?;
                                     }
                                 }
+                                QueryResult::StartProviding(_) => {}
+                                QueryResult::GetProviders(Ok(GetProvidersOk { providers, .. })) => {
+                                    if query_registry.contains(&id) {
+                                        query_registry.remove(&id);
+                                        for peer in providers {
+                                            if !peer_list.contains(&peer) {
+                                                if let Err(_e) = swarm.dial(peer) {
+                                                    continue;
+                                                }
+                                                peer_list.insert(peer);
+                                            }
+                                        }
+                                    }
+                                }
                                 _ => {}
-                            },
-                            _ => {}
                         }
-                    }
+                    },
+                    SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(_)) => {},
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Autonat(_)) => {}
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Dcutr(_)) => {},
                     SwarmEvent::ConnectionEstablished { .. } => {}
@@ -328,6 +382,15 @@ async fn main() -> anyhow::Result<()> {
                     SwarmEvent::Dialing( _ ) => {}
                 }
             }
+            _ = bootstrap_interval.tick() => {
+                swarm.behaviour_mut().kademlia.bootstrap()?;
+            },
+            _ = get_provider_interval.tick() => {
+                query_registry.insert(swarm.behaviour_mut().kademlia.get_providers(topic_key.clone()));
+            },
+            _ = list_interval.tick() => {
+
+            },
         }
     }
     Ok(())
@@ -345,7 +408,7 @@ async fn relay_check(
         let mut recv = false;
         // We check to determine the relay has responded with our address and reservation. If fails to respond within 20 seconds to timeout and error
         let mut delay = futures_timer::Delay::new(std::time::Duration::from_secs(20)).fuse();
-        
+
         loop {
             futures::select! {
                 event = swarm.select_next_some() => {
@@ -384,4 +447,11 @@ async fn relay_check(
 
     writeln!(stdout, "> Listening on /p2p-circuit")?;
     Ok(())
+}
+
+pub fn topic_hash(data: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.update(b"libp2p-chat");
+    hasher.finalize().to_vec()
 }
