@@ -12,7 +12,7 @@ use libp2p::{
     kad::{record::Key, GetProvidersOk, KademliaEvent, QueryResult},
     mdns::MdnsEvent,
     multiaddr::Protocol,
-    swarm::{AddressScore, SwarmEvent},
+    swarm::SwarmEvent,
     Multiaddr, PeerId, Swarm,
 };
 use rustyline_async::{Readline, ReadlineError, SharedWriter};
@@ -148,7 +148,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut peer_book: HashSet<PeerInfo> = HashSet::new();
     let mut find_peer = PeerId::random();
-    let mut list_interval = tokio::time::interval(Duration::from_secs(120));
     let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(120));
     let mut get_provider_interval = tokio::time::interval(Duration::from_millis(500));
     let mut peer_list = HashSet::new();
@@ -293,9 +292,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     },
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Ping(_event)) => {
-
-                    }
+                    SwarmEvent::Behaviour(ChatBehaviourEvent::Ping(_event)) => {}
                     SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(event)) => {
                         if let IdentifyEvent::Received {
                             peer_id,
@@ -388,9 +385,6 @@ async fn main() -> anyhow::Result<()> {
             _ = get_provider_interval.tick() => {
                 query_registry.insert(swarm.behaviour_mut().kademlia.get_providers(topic_key.clone()));
             },
-            _ = list_interval.tick() => {
-
-            },
         }
     }
     Ok(())
@@ -417,11 +411,8 @@ async fn relay_check(
                         SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(IdentifyEvent::Sent { .. })) => {
                             sent = true;
                         }
-                        SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(IdentifyEvent::Received {
-                            info: IdentifyInfo { observed_addr, .. }, ..
-                        })) => {
+                        SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(IdentifyEvent::Received { .. })) => {
                             recv = true;
-                            swarm.add_external_address(observed_addr, AddressScore::Infinite);
                         },
                         _ => continue
                     }
@@ -445,7 +436,6 @@ async fn relay_check(
         writeln!(stdout, "> Listening on relay {}", relay_listener)?;
     }
 
-    writeln!(stdout, "> Listening on /p2p-circuit")?;
     Ok(())
 }
 

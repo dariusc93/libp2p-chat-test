@@ -15,7 +15,7 @@ use libp2p::{
     dcutr::behaviour::{Behaviour as DcutrBehaviour, Event as DcutrEvent},
     identify::{Identify, IdentifyConfig, IdentifyEvent},
     kad::{store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent},
-    mdns::{Mdns, MdnsConfig, MdnsEvent},
+    mdns::{TokioMdns as Mdns, MdnsConfig, MdnsEvent},
     ping::{Ping, PingEvent},
     relay::v2::{
         client::{self, Client as RelayClient, Event as RelayClientEvent},
