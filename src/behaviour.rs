@@ -2,11 +2,10 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use crypto_seal::key::PrivateKey;
+use libp2p::swarm::ConnectionLimits;
 use libp2p::{
-    gossipsub::{GossipsubEvent},
-    relay::v2::client::transport::ClientTransport,
-    swarm::{behaviour::toggle::Toggle},
-    NetworkBehaviour, PeerId, Swarm,
+    gossipsub::GossipsubEvent, relay::v2::client::transport::ClientTransport,
+    swarm::behaviour::toggle::Toggle, NetworkBehaviour, PeerId, Swarm,
 };
 
 use libp2p::{
@@ -15,13 +14,16 @@ use libp2p::{
     dcutr::behaviour::{Behaviour as DcutrBehaviour, Event as DcutrEvent},
     identify::{Identify, IdentifyConfig, IdentifyEvent},
     kad::{store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent},
-    mdns::{TokioMdns as Mdns, MdnsConfig, MdnsEvent},
+    mdns::{MdnsConfig, MdnsEvent, TokioMdns as Mdns},
     ping::{Ping, PingEvent},
     relay::v2::{
         client::{self, Client as RelayClient, Event as RelayClientEvent},
         relay::{Event as RelayServerEvent, Relay as RelayServer},
     },
-    rendezvous::{self, client::{Behaviour as Rendezvous, Event as RendezvousEvent}}
+    rendezvous::{
+        self,
+        client::{Behaviour as Rendezvous, Event as RendezvousEvent},
+    },
 };
 
 use libp2p_helper::gossipsub::GossipsubStream;
@@ -122,7 +124,7 @@ impl ChatBehaviour {
         let keypair = keypair_from_privkey(private_key)?;
         let peer_id = keypair.public().to_peer_id();
 
-        let mdns = None.into();//Some(Mdns::new(MdnsConfig::default()).await?).into();
+        let mdns = None.into(); //Some(Mdns::new(MdnsConfig::default()).await?).into();
         let autonat = Autonat::new(peer_id, Default::default());
         let ping = Ping::default();
         let identify = Identify::new(
@@ -169,7 +171,15 @@ impl ChatBehaviour {
         let transport = transport::build_transport(keypair, relay_transport)?;
 
         let swarm = libp2p::swarm::SwarmBuilder::new(transport, self, peerid)
-            .dial_concurrency_factor(10_u8.try_into().unwrap())    
+            .dial_concurrency_factor(16_u8.try_into().unwrap())
+            .connection_limits(
+                ConnectionLimits::default()
+                    .with_max_pending_incoming(Some(128))
+                    .with_max_pending_outgoing(Some(128))
+                    .with_max_established_incoming(Some(128))
+                    .with_max_established_outgoing(Some(128)),
+            )
+            .connection_event_buffer_size(1024)
             .executor(Box::new(|fut| {
                 tokio::spawn(fut);
             }))

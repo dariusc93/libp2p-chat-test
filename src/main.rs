@@ -17,6 +17,7 @@ use libp2p::{
 };
 use rustyline_async::{Readline, ReadlineError, SharedWriter};
 use sha2::{Digest, Sha256};
+use tracing_subscriber::EnvFilter;
 use std::{collections::HashSet, hash::Hash, io::Write, str::FromStr, time::Duration};
 
 const BOOTNODES: [&str; 4] = [
@@ -61,6 +62,12 @@ pub fn keypair_from_privkey(privkey: &PrivateKey) -> anyhow::Result<Keypair> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let file_appender = tracing_appender::rolling::hourly(std::env::temp_dir(), "libp2p-chat.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
     let opt = CliOpt::parse();
 
     let (private, kp) = new_keypair()?;
@@ -151,12 +158,7 @@ async fn main() -> anyhow::Result<()> {
     let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(120));
     let mut get_provider_interval = tokio::time::interval(Duration::from_millis(500));
     let mut peer_list: HashSet<PeerId> = HashSet::new();
-    // let x = {
-    //     let peers = swarm.behaviour().gossipsub.subscribed_peers(&topic);
 
-    //     let peer_not_found = peers.iter().zip()
-
-    // };
     loop {
         tokio::select! {
             message = stream.next() => {
