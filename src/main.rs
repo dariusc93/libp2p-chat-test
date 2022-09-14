@@ -9,7 +9,7 @@ use libp2p::{
     core::PublicKey,
     identify::{IdentifyEvent, IdentifyInfo},
     identity::Keypair,
-    kad::{record::Key, GetProvidersOk, KademliaEvent, QueryResult},
+    kad::{record::Key, GetProvidersOk, KademliaEvent, QueryId, QueryResult},
     mdns::MdnsEvent,
     multiaddr::Protocol,
     swarm::SwarmEvent,
@@ -150,8 +150,13 @@ async fn main() -> anyhow::Result<()> {
     let mut find_peer = PeerId::random();
     let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(120));
     let mut get_provider_interval = tokio::time::interval(Duration::from_millis(500));
-    let mut peer_list = HashSet::new();
+    let mut peer_list: HashSet<PeerId> = HashSet::new();
+    // let x = {
+    //     let peers = swarm.behaviour().gossipsub.subscribed_peers(&topic);
 
+    //     let peer_not_found = peers.iter().zip()
+
+    // };
     loop {
         tokio::select! {
             message = stream.next() => {
@@ -226,7 +231,8 @@ async fn main() -> anyhow::Result<()> {
                             };
                             find_peer = peer;
                             writeln!(stdout, "Locating Peer {}", find_peer)?;
-                            swarm.behaviour_mut().kademlia.get_closest_peers(peer);
+                            let id = swarm.behaviour_mut().kademlia.get_closest_peers(peer);
+                            query_registry.insert(id);
                         }
                         Some("!id") => {
                             writeln!(stdout, "Public Key: {}", private.public_key()?)?;
@@ -259,124 +265,13 @@ async fn main() -> anyhow::Result<()> {
                     writeln!(stdout, "Error: {}", e)?;
                     continue
                 }
-            },//
+            },
             event = swarm.select_next_some() => {
-                match event {
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Rendezvous(_)) => {},
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::RelayClient(_event)) => {
-                        // writeln!(stdout, "Relay Client Event: {:?}", event)?;
+                match swarm_event(&mut stdout, &mut swarm, event, &mut peer_book, &mut peer_list, &mut query_registry, find_peer).await {
+                    Ok(_) => {},
+                    Err(e) => {
+                        writeln!(stdout, "Error processing event: {}", e)?;
                     }
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::RelayServer(_event)) => { }
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(libp2p::gossipsub::GossipsubEvent::Unsubscribed { peer_id, .. })) => {
-                        for peer in peer_book.iter() {
-                            if peer.peer_id == peer_id {
-                                writeln!(stdout, "{} has left.", peer.public_key)?;
-                                break;
-                            }
-                        }
-                    },
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(_)) => {},
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Mdns(event)) => match event {
-                        MdnsEvent::Discovered(list) => {
-                            for (peer, _) in list {
-                                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
-                            }
-                        }
-                        MdnsEvent::Expired(list) => {
-                            for (peer, _) in list {
-                                if let Some(mdns) = swarm.behaviour().mdns.as_ref() {
-                                    if !mdns.has_node(&peer) {
-                                        swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Ping(_event)) => {}
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(event)) => {
-                        if let IdentifyEvent::Received {
-                            peer_id,
-                            info:
-                                IdentifyInfo {
-                                    listen_addrs,
-                                    protocols,
-                                    public_key,
-                                    agent_version,
-                                    ..
-                                },
-                        } = event
-                        {
-                            if agent_version == "libp2p-chat" {
-                                if let PublicKey::Ed25519(pk) = public_key {
-                                    match crypto_seal::key::PublicKey::from_ed25519_bytes(&pk.encode()) {
-                                        Ok(pk) if !peer_book.iter().any(|peer| peer.public_key == pk) => {
-                                            writeln!(stdout, "> {} joined", pk)?;
-                                            peer_book.insert(PeerInfo {
-                                                peer_id,
-                                                public_key: pk,
-                                                address: listen_addrs.clone()
-                                            });
-                                        },
-                                        _ => continue
-                                    }
-                                }
-                            }
-                            if protocols
-                                .iter()
-                                .any(|p| p.as_bytes() == libp2p::kad::protocol::DEFAULT_PROTO_NAME)
-                            {
-                                for addr in &listen_addrs {
-                                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
-                                }
-                            }
-                        }
-                    }
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(KademliaEvent::OutboundQueryCompleted { id, result, .. })) => {
-                        match result {
-                                QueryResult::GetClosestPeers(Ok(ok)) => {
-                                    let mut found = false;
-                                    for peer in ok.peers {
-                                        if peer == find_peer {
-                                            writeln!(stdout, "> {find_peer} found")?;
-                                            found = true;
-                                            break;
-                                        }
-                                    }
-                                    if !found {
-                                        writeln!(stdout, "> {find_peer} cannot be found")?;
-                                    }
-                                }
-                                QueryResult::StartProviding(_) => {}
-                                QueryResult::GetProviders(Ok(GetProvidersOk { providers, .. })) => {
-                                    if query_registry.contains(&id) {
-                                        query_registry.remove(&id);
-                                        for peer in providers {
-                                            if !peer_list.contains(&peer) {
-                                                if let Err(_e) = swarm.dial(peer) {
-                                                    continue;
-                                                }
-                                                peer_list.insert(peer);
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {}
-                        }
-                    },
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(_)) => {},
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Autonat(_)) => {}
-                    SwarmEvent::Behaviour(ChatBehaviourEvent::Dcutr(_)) => {},
-                    SwarmEvent::ConnectionEstablished { .. } => {}
-                    SwarmEvent::ConnectionClosed { .. } => {}
-                    SwarmEvent::IncomingConnection { .. } => {}
-                    SwarmEvent::IncomingConnectionError { .. } => {}
-                    SwarmEvent::OutgoingConnectionError { .. } => {}
-                    SwarmEvent::BannedPeer { .. } => {}
-                    SwarmEvent::NewListenAddr { .. } => {}
-                    SwarmEvent::ExpiredListenAddr { .. } => {}
-                    SwarmEvent::ListenerClosed { .. } => {}
-                    SwarmEvent::ListenerError { .. } => {}
-                    SwarmEvent::Dialing( _ ) => {}
                 }
             }
             _ = bootstrap_interval.tick() => {
@@ -386,6 +281,156 @@ async fn main() -> anyhow::Result<()> {
                 query_registry.insert(swarm.behaviour_mut().kademlia.get_providers(topic_key.clone()));
             },
         }
+    }
+    Ok(())
+}
+
+async fn swarm_event<S>(
+    stdout: &mut SharedWriter,
+    swarm: &mut Swarm<ChatBehaviour>,
+    event: SwarmEvent<ChatBehaviourEvent, S>,
+    peer_book: &mut HashSet<PeerInfo>,
+    peer_list: &mut HashSet<PeerId>,
+    query_registry: &mut HashSet<QueryId>,
+    find_peer: PeerId,
+) -> anyhow::Result<()> {
+    match event {
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Rendezvous(_)) => {}
+        SwarmEvent::Behaviour(ChatBehaviourEvent::RelayClient(_event)) => {
+            // writeln!(stdout, "Relay Client Event: {:?}", event)?;
+        }
+        SwarmEvent::Behaviour(ChatBehaviourEvent::RelayServer(_event)) => {}
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(
+            libp2p::gossipsub::GossipsubEvent::Unsubscribed { peer_id, .. },
+        )) => {
+            for peer in peer_book.iter() {
+                if peer.peer_id == peer_id {
+                    writeln!(stdout, "{} has left.", peer.public_key)?;
+                    break;
+                }
+            }
+        }
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(_)) => {}
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Mdns(event)) => match event {
+            MdnsEvent::Discovered(list) => {
+                for (peer, _) in list {
+                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
+                }
+            }
+            MdnsEvent::Expired(list) => {
+                for (peer, _) in list {
+                    if let Some(mdns) = swarm.behaviour().mdns.as_ref() {
+                        if !mdns.has_node(&peer) {
+                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer);
+                        }
+                    }
+                }
+            }
+        },
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Ping(_event)) => {}
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Identify(event)) => {
+            if let IdentifyEvent::Received {
+                peer_id,
+                info:
+                    IdentifyInfo {
+                        listen_addrs,
+                        protocols,
+                        public_key,
+                        agent_version,
+                        ..
+                    },
+            } = event
+            {
+                if agent_version == "libp2p-chat" {
+                    if let PublicKey::Ed25519(pk) = public_key {
+                        match crypto_seal::key::PublicKey::from_ed25519_bytes(&pk.encode()) {
+                            Ok(pk) if !peer_book.iter().any(|peer| peer.public_key == pk) => {
+                                writeln!(stdout, "> {} joined", pk)?;
+                                peer_book.insert(PeerInfo {
+                                    peer_id,
+                                    public_key: pk,
+                                    address: listen_addrs.clone(),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if protocols
+                    .iter()
+                    .any(|p| p.as_bytes() == libp2p::kad::protocol::DEFAULT_PROTO_NAME)
+                {
+                    for addr in &listen_addrs {
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .add_address(&peer_id, addr.clone());
+                    }
+                }
+
+                if protocols
+                    .iter()
+                    .any(|p| p.as_bytes() == libp2p::autonat::DEFAULT_PROTOCOL_NAME)
+                {
+                    for addr in listen_addrs {
+                        swarm
+                            .behaviour_mut()
+                            .autonat
+                            .add_server(peer_id, Some(addr));
+                    }
+                }
+            }
+        }
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(KademliaEvent::OutboundQueryCompleted {
+            id,
+            result,
+            ..
+        })) => match result {
+            QueryResult::GetClosestPeers(Ok(ok)) => {
+                if query_registry.remove(&id) {
+                    let mut found = false;
+                    for peer in ok.peers {
+                        if peer == find_peer {
+                            writeln!(stdout, "> {find_peer} found")?;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        writeln!(stdout, "> {find_peer} cannot be found")?;
+                    }
+                }
+            }
+
+            QueryResult::StartProviding(_) => {}
+            QueryResult::GetProviders(Ok(GetProvidersOk { providers, .. })) => {
+                if query_registry.remove(&id) {
+                    for peer in providers {
+                        if !peer_list.contains(&peer) {
+                            if let Err(_e) = swarm.dial(peer) {
+                                continue;
+                            }
+                            peer_list.insert(peer);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(_)) => {}
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Autonat(_)) => {}
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Dcutr(_)) => {}
+        SwarmEvent::ConnectionEstablished { .. } => {}
+        SwarmEvent::ConnectionClosed { .. } => {}
+        SwarmEvent::IncomingConnection { .. } => {}
+        SwarmEvent::IncomingConnectionError { .. } => {}
+        SwarmEvent::OutgoingConnectionError { .. } => {}
+        SwarmEvent::BannedPeer { .. } => {}
+        SwarmEvent::NewListenAddr { .. } => {}
+        SwarmEvent::ExpiredListenAddr { .. } => {}
+        SwarmEvent::ListenerClosed { .. } => {}
+        SwarmEvent::ListenerError { .. } => {}
+        SwarmEvent::Dialing(_) => {}
     }
     Ok(())
 }
