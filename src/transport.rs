@@ -1,3 +1,4 @@
+use libp2p::core::either::EitherOutput;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::timeout::TransportTimeout;
 use libp2p::core::transport::upgrade::Version;
@@ -7,8 +8,11 @@ use libp2p::dns::TokioDnsConfig;
 use libp2p::identity;
 use libp2p::mplex::MplexConfig;
 use libp2p::noise::{self, NoiseConfig};
+use libp2p::quic::tokio::Transport as TokioQuicTransport;
+use libp2p::quic::Config as GenQuicConfig;
 use libp2p::relay::v2::client::transport::ClientTransport;
-use libp2p::tcp::{GenTcpConfig, TokioTcpTransport};
+use libp2p::tcp::tokio::Transport as TokioTcpTransport;
+use libp2p::tcp::Config as GenTcpConfig;
 use libp2p::yamux::{WindowUpdateMode, YamuxConfig};
 use libp2p::{PeerId, Transport};
 use std::io::{self, Error, ErrorKind};
@@ -33,7 +37,13 @@ pub fn build_transport(
 
     let multiplex_upgrade = SelectUpgrade::new(yamux_config, MplexConfig::new());
 
-    let tcp_transport = TokioTcpTransport::new(GenTcpConfig::default().nodelay(true).port_reuse(true));
+    let mut quic_config = GenQuicConfig::new(&keypair);
+    quic_config.handshake_timeout = Duration::from_secs(1);
+
+    let quic_transport = TokioQuicTransport::new(quic_config);
+    
+    let tcp_transport =
+        TokioTcpTransport::new(GenTcpConfig::default().nodelay(true).port_reuse(true));
 
     let transport_timeout = TransportTimeout::new(tcp_transport, Duration::from_secs(30));
     let transport = TokioDnsConfig::system(transport_timeout)?;
@@ -59,6 +69,11 @@ pub fn build_transport(
             .map_err(|err| Error::new(ErrorKind::Other, err))
             .boxed(),
     };
-
+    let transport = OrTransport::new(quic_transport, transport)
+        .map(|either_output, _| match either_output {
+            EitherOutput::First((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
+            EitherOutput::Second((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
+        })
+        .boxed();
     Ok(transport)
 }

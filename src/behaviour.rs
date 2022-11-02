@@ -13,10 +13,10 @@ use libp2p::{
     self,
     autonat::{Behaviour as Autonat, Event as AutonatEvent},
     dcutr::behaviour::{Behaviour as DcutrBehaviour, Event as DcutrEvent},
-    identify::{Identify, IdentifyConfig, IdentifyEvent},
+    identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent},
     kad::{store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent},
     mdns::{TokioMdns as Mdns, MdnsConfig, MdnsEvent},
-    ping::{Ping, PingEvent},
+    ping::{Behaviour as Ping, Event as PingEvent},
     relay::v2::{
         client::{self, Client as RelayClient, Event as RelayClientEvent},
         relay::{Event as RelayServerEvent, Relay as RelayServer},

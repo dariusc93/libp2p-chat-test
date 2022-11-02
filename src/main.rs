@@ -7,7 +7,7 @@ use crypto_seal::{key::PrivateKey, Package, ToOpenWithPublicKey, ToSealWithShare
 use futures::{FutureExt, StreamExt};
 use libp2p::{
     core::PublicKey,
-    identify::{IdentifyEvent, IdentifyInfo},
+    identify::{Event as IdentifyEvent, Info as IdentifyInfo},
     identity::Keypair,
     kad::{record::Key, GetProvidersOk, KademliaEvent, QueryId, QueryResult},
     mdns::MdnsEvent,
@@ -43,7 +43,7 @@ struct CliOpt {
     topic: String,
 
     #[clap(long)]
-    use_relay: Option<bool>,
+    use_relay: bool,
 }
 
 fn new_keypair() -> anyhow::Result<(PrivateKey, Keypair)> {
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     let mut behaviour = ChatBehaviour::create_behaviour(&private).await?;
 
     let relay_transport = match opt.use_relay {
-        Some(true) => {
+        true => {
             let transport = behaviour.enable_relay(peer);
             Some(transport)
         }
@@ -83,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
     } else {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())?;
         swarm.listen_on("/ip6/::/tcp/0".parse().unwrap())?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic".parse().unwrap())?;
+        swarm.listen_on("/ip6/::/udp/0/quic".parse().unwrap())?;
     }
 
     let (mut rl, mut stdout) = Readline::new(format!("{}  :> ", peer))?;
@@ -103,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let bootaddr = Multiaddr::from_str("/dnsaddr/bootstrap.libp2p.io")?;
-    if let Some(true) = opt.use_relay {
+    if opt.use_relay {
         //Note that the loop is not needed but is used for testing multiple relay connections
         relay_check(
             &mut stdout,

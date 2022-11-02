@@ -14,15 +14,10 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-libp2p-helper = { default-features = false, version = "0.3", features = [
+libp2p-helper = { default-features = false, version = "0.4", features = [
     "gossipsub",
 ] }
-libp2p = { version = "0.48", features = [
-    "tcp-tokio",
-    "dns-tokio",
-    "dcutr",
-    "mdns-tokio",
-] }
+libp2p = { version = "0.50", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 futures = { version = "0.3" }
 futures-timer = "3.0"
@@ -35,3 +30,7 @@ crypto-seal = "0.2"
 clap = { version = "3.2", features = ["derive"] }
 bs58 = "0.4"
 sha2 = "0.10"
+
+[patch.crates-io]
+libp2p = { git = "https://github.com/kpp/rust-libp2p", branch = "libp2p-quic" }
+libp2p-helper = { git = "https://github.com/dariusc93/libp2p-helper", branch = "feat/test" }
