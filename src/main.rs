@@ -7,10 +7,10 @@ use crypto_seal::{key::PrivateKey, Package, ToOpenWithPublicKey, ToSealWithShare
 use futures::{FutureExt, StreamExt};
 use libp2p::{
     core::PublicKey,
-    identify::{IdentifyEvent, IdentifyInfo},
+    identify::{Event as IdentifyEvent, Info as IdentifyInfo},
     identity::Keypair,
     kad::{record::Key, GetProvidersOk, KademliaEvent, QueryId, QueryResult},
-    mdns::MdnsEvent,
+    mdns::Event as MdnsEvent,
     multiaddr::Protocol,
     swarm::SwarmEvent,
     Multiaddr, PeerId, Swarm,
@@ -381,7 +381,7 @@ async fn swarm_event<S>(
                 }
             }
         }
-        SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(KademliaEvent::OutboundQueryCompleted {
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(KademliaEvent::OutboundQueryProgressed {
             id,
             result,
             ..
@@ -403,7 +403,7 @@ async fn swarm_event<S>(
             }
 
             QueryResult::StartProviding(_) => {}
-            QueryResult::GetProviders(Ok(GetProvidersOk { providers, .. })) => {
+            QueryResult::GetProviders(Ok(GetProvidersOk::FoundProviders{ providers, .. })) => {
                 if query_registry.remove(&id) {
                     for peer in providers {
                         if !peer_list.contains(&peer) {

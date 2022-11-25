@@ -3,19 +3,20 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use crypto_seal::key::PrivateKey;
 use libp2p::gossipsub::{self, Gossipsub, MessageAuthenticity};
+use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
     gossipsub::GossipsubEvent, relay::v2::client::transport::ClientTransport,
-    swarm::behaviour::toggle::Toggle, NetworkBehaviour, PeerId, Swarm,
+    swarm::behaviour::toggle::Toggle, PeerId, Swarm,
 };
 
 use libp2p::{
     self,
     autonat::{Behaviour as Autonat, Event as AutonatEvent},
     dcutr::behaviour::{Behaviour as DcutrBehaviour, Event as DcutrEvent},
-    identify::{Identify, IdentifyConfig, IdentifyEvent},
+    identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent},
     kad::{store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent},
-    mdns::{MdnsConfig, MdnsEvent, TokioMdns as Mdns},
-    ping::{Ping, PingEvent},
+    mdns::{Config as MdnsConfig, Event as MdnsEvent, tokio::Behaviour as Mdns},
+    ping::{Behaviour as Ping, Event as PingEvent},
     relay::v2::{
         client::{self, Client as RelayClient, Event as RelayClientEvent},
         relay::{Event as RelayServerEvent, Relay as RelayServer},
@@ -176,11 +177,8 @@ impl ChatBehaviour {
         let peerid = keypair.public().to_peer_id();
         let transport = transport::build_transport(keypair, relay_transport)?;
 
-        let swarm = libp2p::swarm::SwarmBuilder::new(transport, self, peerid)
+        let swarm = libp2p::swarm::SwarmBuilder::with_tokio_executor(transport, self, peerid)
             .dial_concurrency_factor(10_u8.try_into().unwrap())
-            .executor(Box::new(|fut| {
-                tokio::spawn(fut);
-            }))
             .build();
         Ok(swarm)
     }
