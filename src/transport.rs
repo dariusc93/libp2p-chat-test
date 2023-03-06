@@ -1,3 +1,4 @@
+use futures::future::Either;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::timeout::TransportTimeout;
 use libp2p::core::transport::upgrade::Version;
@@ -7,11 +8,13 @@ use libp2p::dns::TokioDnsConfig;
 use libp2p::identity;
 use libp2p::mplex::MplexConfig;
 use libp2p::noise::{self, NoiseConfig};
-use libp2p::relay::v2::client::transport::ClientTransport;
-use libp2p::tcp::{Config as GenTcpConfig, tokio::Transport as TokioTcpTransport};
+use libp2p::quic::tokio::Transport as TokioQuicTransport;
+use libp2p::quic::Config as QuicConfig;
+use libp2p::relay::client::Transport as ClientTransport;
+use libp2p::tcp::{tokio::Transport as TokioTcpTransport, Config as GenTcpConfig};
 use libp2p::yamux::{WindowUpdateMode, YamuxConfig};
 use libp2p::{PeerId, Transport};
-use std::io::{self, Error, ErrorKind};
+use std::io::{self};
 use std::time::Duration;
 
 pub fn build_transport(
@@ -33,7 +36,8 @@ pub fn build_transport(
 
     let multiplex_upgrade = SelectUpgrade::new(yamux_config, MplexConfig::new());
 
-    let tcp_transport = TokioTcpTransport::new(GenTcpConfig::default().nodelay(true).port_reuse(true));
+    let tcp_transport =
+        TokioTcpTransport::new(GenTcpConfig::default().nodelay(true).port_reuse(true));
 
     let transport_timeout = TransportTimeout::new(tcp_transport, Duration::from_secs(30));
     let transport = TokioDnsConfig::system(transport_timeout)?;
@@ -47,7 +51,6 @@ pub fn build_transport(
                 .multiplex(multiplex_upgrade)
                 .timeout(Duration::from_secs(20))
                 .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
-                .map_err(|err| Error::new(ErrorKind::Other, err))
                 .boxed()
         }
         None => transport
@@ -56,9 +59,20 @@ pub fn build_transport(
             .multiplex(multiplex_upgrade)
             .timeout(Duration::from_secs(20))
             .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
-            .map_err(|err| Error::new(ErrorKind::Other, err))
             .boxed(),
     };
+
+    let mut quic_config = QuicConfig::new(&keypair);
+    quic_config.support_draft_29 = true;
+
+    let quic_transport = TokioQuicTransport::new(quic_config);
+
+    let transport = OrTransport::new(quic_transport, transport)
+        .map(|either_output, _| match either_output {
+            Either::Left((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
+            Either::Right((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
+        })
+        .boxed();
 
     Ok(transport)
 }

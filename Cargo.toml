@@ -5,7 +5,7 @@ edition = "2021"
 description = """
 An example/testbed of using libp2p with different protocols (e.g gossipsip, relay/dcute, etc)
 """
-rust-version = "1.60"
+rust-version = "1.67"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/dariusc93/libp2p-chat"
 authors = ["Darius Clark"]
@@ -14,30 +14,11 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-libp2p-helper = { default-features = false, version = "0.5", features = [
+libp2p-helper = { default-features = false, version = "0.6", features = [
     "gossipsub",
 ] }
-libp2p = { version = "0.50", features = [
-    "gossipsub",
-    "autonat",
-    "relay",
-    "dcutr",
-    "identify",
-    "kad",
-    "websocket",
-    "tokio",
-    "macros",
-    "tcp",
-    "mplex",
-    "noise",
-    "ping",
-    "yamux",
-    "dns",
-    "mdns",
-    "rsa",
-    "serde",
-    "rendezvous",
-] }
+libp2p = { version = "0.51", features = ["full"] }
+
 tokio = { version = "1", features = ["full"] }
 futures = { version = "0.3" }
 futures-timer = "3.0"
@@ -45,8 +26,10 @@ anyhow = { version = "1" }
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
-rustyline-async = "0.2"
+rustyline-async = "0.3"
 crypto-seal = "0.2"
-clap = { version = "3.2", features = ["derive"] }
+clap = { version = "4.1", features = ["derive"] }
 bs58 = "0.4"
 sha2 = "0.10"
+void = "1.0"
+libp2p-nat = "0.2"

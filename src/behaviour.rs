@@ -2,25 +2,21 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use crypto_seal::key::PrivateKey;
-use libp2p::gossipsub::{self, Gossipsub, MessageAuthenticity};
+use libp2p::gossipsub::{self, Behaviour as Gossipsub, MessageAuthenticity};
+use libp2p::relay::client::Transport as ClientTransport;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{
-    gossipsub::GossipsubEvent, relay::v2::client::transport::ClientTransport,
-    swarm::behaviour::toggle::Toggle, PeerId, Swarm,
-};
+use libp2p::{gossipsub::Event as GossipsubEvent, swarm::behaviour::toggle::Toggle, PeerId, Swarm};
 
 use libp2p::{
     self,
     autonat::{Behaviour as Autonat, Event as AutonatEvent},
-    dcutr::behaviour::{Behaviour as DcutrBehaviour, Event as DcutrEvent},
+    dcutr::{Behaviour as DcutrBehaviour, Event as DcutrEvent},
     identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent},
     kad::{store::MemoryStore, Kademlia, KademliaConfig, KademliaEvent},
-    mdns::{Config as MdnsConfig, Event as MdnsEvent, tokio::Behaviour as Mdns},
+    mdns::{tokio::Behaviour as Mdns, Config as MdnsConfig, Event as MdnsEvent},
     ping::{Behaviour as Ping, Event as PingEvent},
-    relay::v2::{
-        client::{self, Client as RelayClient, Event as RelayClientEvent},
-        relay::{Event as RelayServerEvent, Relay as RelayServer},
-    },
+    relay::client::{self, Behaviour as RelayClient, Event as RelayClientEvent},
+    relay::{Behaviour as RelayServer, Event as RelayServerEvent},
     rendezvous::{
         self,
         client::{Behaviour as Rendezvous, Event as RendezvousEvent},
@@ -125,7 +121,7 @@ impl ChatBehaviour {
         let keypair = keypair_from_privkey(private_key)?;
         let peer_id = keypair.public().to_peer_id();
 
-        let mdns = Some(Mdns::new(MdnsConfig::default())?).into();
+        let mdns = Some(Mdns::new(MdnsConfig::default(), peer_id)?).into();
         let autonat = Autonat::new(peer_id, Default::default());
         let ping = Ping::default();
         let identify = Identify::new(
@@ -136,7 +132,7 @@ impl ChatBehaviour {
 
         let kad_config = KademliaConfig::default();
         let kademlia = Kademlia::with_config(peer_id, store, kad_config);
-        let gconfig = gossipsub::GossipsubConfigBuilder::default()
+        let gconfig = gossipsub::ConfigBuilder::default()
             .support_floodsub()
             .build()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -159,8 +155,8 @@ impl ChatBehaviour {
     }
 
     pub fn enable_relay(&mut self, peer_id: PeerId) -> ClientTransport {
-        let dcutr = Some(DcutrBehaviour::new()).into();
-        let (transport, client) = RelayClient::new_transport_and_behaviour(peer_id);
+        let dcutr = Some(DcutrBehaviour::new(peer_id)).into();
+        let (transport, client) = client::new(peer_id);
         self.relay_client = Some(client).into();
         // Use for servers outside of the nat
         // self.relay_server = Some(RelayServer::new(peer_id, Default::default())).into();

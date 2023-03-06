@@ -149,14 +149,10 @@ async fn main() -> anyhow::Result<()> {
     let mut peer_book: HashSet<PeerInfo> = HashSet::new();
     let mut find_peer = PeerId::random();
     let mut bootstrap_interval = tokio::time::interval(Duration::from_secs(120));
-    let mut get_provider_interval = tokio::time::interval(Duration::from_millis(500));
+    let mut get_provider_interval = tokio::time::interval(Duration::from_secs(2));
     let mut peer_list: HashSet<PeerId> = HashSet::new();
-    // let x = {
-    //     let peers = swarm.behaviour().gossipsub.subscribed_peers(&topic);
+    let mut lookup_active = false;
 
-    //     let peer_not_found = peers.iter().zip()
-
-    // };
     loop {
         tokio::select! {
             message = stream.next() => {
@@ -254,11 +250,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 },
                 Err(ReadlineError::Interrupted) => {
-                    writeln!(stdout, "")?;
+                    writeln!(stdout)?;
                     break
                 },
                 Err(ReadlineError::Eof) => {
-                    writeln!(stdout, "")?;
+                    writeln!(stdout)?;
                     break
                 },
                 Err(e) => {
@@ -267,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             },
             event = swarm.select_next_some() => {
-                match swarm_event(&mut stdout, &mut swarm, event, &mut peer_book, &mut peer_list, &mut query_registry, find_peer).await {
+                match swarm_event(&mut stdout, &mut swarm, event, &mut peer_book, &mut peer_list, &mut query_registry, find_peer, &mut lookup_active).await {
                     Ok(_) => {},
                     Err(e) => {
                         writeln!(stdout, "Error processing event: {}", e)?;
@@ -278,7 +274,10 @@ async fn main() -> anyhow::Result<()> {
                 swarm.behaviour_mut().kademlia.bootstrap()?;
             },
             _ = get_provider_interval.tick() => {
-                query_registry.insert(swarm.behaviour_mut().kademlia.get_providers(topic_key.clone()));
+                if !lookup_active {
+                    query_registry.insert(swarm.behaviour_mut().kademlia.get_providers(topic_key.clone()));
+                    lookup_active = true;
+                }
             },
         }
     }
@@ -293,6 +292,7 @@ async fn swarm_event<S>(
     peer_list: &mut HashSet<PeerId>,
     query_registry: &mut HashSet<QueryId>,
     find_peer: PeerId,
+    lookup_active: &mut bool,
 ) -> anyhow::Result<()> {
     match event {
         SwarmEvent::Behaviour(ChatBehaviourEvent::Rendezvous(_)) => {}
@@ -301,7 +301,7 @@ async fn swarm_event<S>(
         }
         SwarmEvent::Behaviour(ChatBehaviourEvent::RelayServer(_event)) => {}
         SwarmEvent::Behaviour(ChatBehaviourEvent::Gossipsub(
-            libp2p::gossipsub::GossipsubEvent::Unsubscribed { peer_id, .. },
+            libp2p::gossipsub::Event::Unsubscribed { peer_id, .. },
         )) => {
             for peer in peer_book.iter() {
                 if peer.peer_id == peer_id {
@@ -381,11 +381,9 @@ async fn swarm_event<S>(
                 }
             }
         }
-        SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(KademliaEvent::OutboundQueryProgressed {
-            id,
-            result,
-            ..
-        })) => match result {
+        SwarmEvent::Behaviour(ChatBehaviourEvent::Kad(
+            KademliaEvent::OutboundQueryProgressed { id, result, step, .. },
+        )) => match result {
             QueryResult::GetClosestPeers(Ok(ok)) => {
                 if query_registry.remove(&id) {
                     let mut found = false;
@@ -403,16 +401,14 @@ async fn swarm_event<S>(
             }
 
             QueryResult::StartProviding(_) => {}
-            QueryResult::GetProviders(Ok(GetProvidersOk::FoundProviders{ providers, .. })) => {
-                if query_registry.remove(&id) {
-                    for peer in providers {
-                        if !peer_list.contains(&peer) {
-                            if let Err(_e) = swarm.dial(peer) {
-                                continue;
-                            }
-                            peer_list.insert(peer);
-                        }
-                    }
+            QueryResult::GetProviders(Ok(GetProvidersOk::FoundProviders {
+                providers: _, ..
+            })) => {}
+            QueryResult::GetProviders(Ok(GetProvidersOk::FinishedWithNoAdditionalRecord {
+                ..
+            })) => {
+                if step.last && query_registry.remove(&id) {
+                    *lookup_active = false;
                 }
             }
             _ => {}
